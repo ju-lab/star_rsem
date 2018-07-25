@@ -1,0 +1,142 @@
+# Snakefile to align RNA-seq files with STAR 2-pass and quantify using RSEM
+# Then summarize TPM values into a single table. 
+# STAR parameters from https://github.com/broadinstitute/gtex-pipeline/blob/master/TOPMed_RNAseq_pipeline.md
+# Used RSEM quantification options from Dobin and Gingeras (2015) Mapping RNA-seq Reads with STAR (https://dx.doi.org/10.1002/0471250953.bi1114s51)
+# 2018.07.25 CJY
+
+
+import os
+import re
+
+# PATH TO STAR FILES 
+STAR = '/home/users/cjyoon/anaconda3/bin/STAR'
+GENOMEDIR = '/home/users/cjyoon/reference/human_g1k_v37_starindex/'
+RSEMDIR = '/home/users/cjyoon/reference/human_g1k_v37_starindex/rsem_ref'
+
+SJDBGTF = "/home/users/cjyoon/reference/human_g1k_v37_starindex/Homo_sapiens.GRCh37.87.gtf"
+REFERENCE = '/home/users/cjyoon/reference/GRCh37/human_g1k_v37.fasta'
+
+# PATH TO RSEM
+RSEM_CALCULATE_EXPRESSION = '/home/users/cjyoon/anaconda3/bin/rsem-calculate-expression'
+RSEM_PREPARE_REFERENCE = '/home/users/cjyoon/anaconda3/bin/rsem-prepare-reference'
+
+# Identify FASTQ file samples in the fastq folder
+SAMPLES = list(set([ re.sub(r'_R[0-9]+.fastq.gz', '', i) for i in os.listdir('./fastq') if i.endswith('fastq.gz')]))
+
+# Create output folder directories 
+os.makedirs('./temp_bam', exist_ok=True)
+os.makedirs('./star_bam', exist_ok=True)
+
+rule all:
+    input:
+        bams = expand("rsem/{sample}.genes.results", sample=SAMPLES)
+
+rule star_index: 
+    input:
+        SJDBGTF = SJDBGTF, 
+        REFERENCE = REFERENCE
+    output:
+        starindex = os.path.join(GENOMEDIR, 'SAindex')
+    params:
+        GENOMEDIR = GENOMEDIR
+    threads: 8
+    log:
+        "logs/star_indexing.log"
+    shell:
+        "(STAR --runThreadN {threads} --runMode genomeGenerate --genomeDir {params.GENOMEDIR} "
+        "--genomeFastaFiles {input.REFERENCE} --sjdbGTFfile {input.SJDBGTF}) "
+        "&> {log}"
+
+
+rule star_align:
+    input:
+        fastq1 = lambda wildcards: 'fastq/' + wildcards.sample + '_R1.fastq.gz',
+        fastq2 = lambda wildcards: 'fastq/' + wildcards.sample + '_R2.fastq.gz',
+        starindex = os.path.join(GENOMEDIR, 'SAindex')
+
+    output: 
+        reference_bam = "temp_bam/{sample}Aligned.sortedByCoord.out.bam", 
+        transcriptome_bam = "temp_bam/{sample}Aligned.toTranscriptome.out.bam", 
+        final_reference_bam = "star_bam/{sample}.reference.bam", 
+        final_transcriptome_bam = "star_bam/{sample}.transcriptome.bam"
+    threads: 8
+    log: 
+        "logs/{sample}.star_align.log"
+    params:
+        sample = '{sample}', 
+    shell:
+        "({STAR} --runMode alignReads --runThreadN {threads} --genomeDir {GENOMEDIR} "
+        "--twopassMode Basic "
+        "--outFilterMultimapNmax 20 "
+        "--alignSJoverhangMin 8 "
+        "--alignSJDBoverhangMin 1 "
+        "--outFilterMismatchNmax 999 "
+        "--outFilterMismatchNoverLmax 0.1 "
+        "--alignIntronMin 20 "
+        "--alignIntronMax 1000000 "
+        "--alignMatesGapMax 1000000 "
+        "--outFilterType BySJout "
+        "--outFilterScoreMinOverLread 0.33 "
+        "--outFilterMatchNminOverLread 0.33 "
+        "--limitSjdbInsertNsj 1200000 " 
+        "--outFileNamePrefix temp_bam/{params.sample} "
+        "--outSAMstrandField intronMotif "
+        "--outFilterIntronMotifs None "
+        "--alignSoftClipAtReferenceEnds Yes "
+        "--quantMode TranscriptomeSAM GeneCounts "
+        "--outSAMunmapped Within "
+        "--genomeLoad NoSharedMemory "
+        "--chimSegmentMin 15 "
+        "--chimJunctionOverhangMin 15 "
+        "--chimOutType WithinBAM SoftClip "
+        "--chimMainSegmentMultNmax 1 "
+        "--outSAMattributes NH HI AS nM NM ch "
+        "--sjdbGTFfile {SJDBGTF} --readFilesIn {input.fastq1} {input.fastq2} "
+        "--readFilesCommand zcat --outSAMtype BAM SortedByCoordinate "
+        "--outSAMattrRGline ID:{params.sample} SM:{params.sample} --outBAMsortingThreadN {threads} "
+        "--bamRemoveDuplicatesType UniqueIdentical; "
+        "mv {output.reference_bam} {output.final_reference_bam}; "
+        "mv {output.transcriptome_bam} {output.final_transcriptome_bam}; "
+        "samtools index {output.final_reference_bam}; "
+        "samtools index {output.final_transcriptome_bam}) "
+        " &> {log}"
+
+
+rule rsem_prepare_reference:
+    input:
+        SJDBGTF = SJDBGTF, 
+        REFERENCE = REFERENCE, 
+        RSEM_PREPARE_REFERENCE = RSEM_PREPARE_REFERENCE
+    params:
+        RSEMDIR = RSEMDIR
+    output: 
+        RSEMDIR + ".idx.fa"
+    threads: 8
+    log:
+        "logs/rsem_prepare_reference.log"
+    shell:
+        "({input.RSEM_PREPARE_REFERENCE} -p {threads} --gtf {input.SJDBGTF} {input.REFERENCE} {params.RSEMDIR}) "
+        " &> {log}"
+
+
+rule rsem_calculate_expression:
+  params:
+    sample = "{sample}", 
+    RSEMDIR = RSEMDIR
+  input:
+    transcriptome_bam = "star_bam/{sample}.transcriptome.bam", 
+    rsem_index = RSEMDIR + ".idx.fa"
+  output:
+    "rsem/{sample}.genes.results"
+  threads: 8
+
+  log:
+    "logs/{sample}.rsem.log"
+  shell:
+    "({RSEM_CALCULATE_EXPRESSION} --bam --no-bam-output -p {threads} --paired-end --forward-prob 0 "
+    "{input.transcriptome_bam})" # {params.RSEMDIR} rsem/{params.sample})"
+    " >& {log}"
+
+
+
+
