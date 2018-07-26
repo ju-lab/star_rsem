@@ -20,6 +20,10 @@ REFERENCE = '/home/users/cjyoon/reference/GRCh37/human_g1k_v37.fasta'
 RSEM_CALCULATE_EXPRESSION = '/home/users/cjyoon/anaconda3/bin/rsem-calculate-expression'
 RSEM_PREPARE_REFERENCE = '/home/users/cjyoon/anaconda3/bin/rsem-prepare-reference'
 
+# PATH to SAMBAMBA
+SAMBAMBA = '/home/users/cjyoon/anaconda3/bin/sambamba'
+
+
 # Identify FASTQ file samples in the fastq folder
 SAMPLES = list(set([ re.sub(r'_R[0-9]+.fastq.gz', '', i) for i in os.listdir('./fastq') if i.endswith('fastq.gz')]))
 
@@ -33,6 +37,7 @@ rule all:
 
 rule star_index: 
     input:
+        STAR = STAR, 
         SJDBGTF = SJDBGTF, 
         REFERENCE = REFERENCE
     output:
@@ -43,29 +48,28 @@ rule star_index:
     log:
         "logs/star_indexing.log"
     shell:
-        "(STAR --runThreadN {threads} --runMode genomeGenerate --genomeDir {params.GENOMEDIR} "
+        "({input.STAR} --runThreadN {threads} --runMode genomeGenerate --genomeDir {params.GENOMEDIR} "
         "--genomeFastaFiles {input.REFERENCE} --sjdbGTFfile {input.SJDBGTF}) "
         "&> {log}"
 
 
 rule star_align:
     input:
+        STAR = STAR, 
         fastq1 = lambda wildcards: 'fastq/' + wildcards.sample + '_R1.fastq.gz',
         fastq2 = lambda wildcards: 'fastq/' + wildcards.sample + '_R2.fastq.gz',
         starindex = os.path.join(GENOMEDIR, 'SAindex')
 
     output: 
-        reference_bam = "temp_bam/{sample}Aligned.sortedByCoord.out.bam", 
+        reference_bam = "temp_bam/{sample}Aligned.out.bam", 
         transcriptome_bam = "temp_bam/{sample}Aligned.toTranscriptome.out.bam", 
-        final_reference_bam = "star_bam/{sample}.reference.bam", 
-        final_transcriptome_bam = "star_bam/{sample}.transcriptome.bam"
     threads: 8
     log: 
         "logs/{sample}.star_align.log"
     params:
         sample = '{sample}', 
     shell:
-        "({STAR} --runMode alignReads --runThreadN {threads} --genomeDir {GENOMEDIR} "
+        "({input.STAR} --runMode alignReads --runThreadN {threads} --genomeDir {GENOMEDIR} "
         "--twopassMode Basic "
         "--outFilterMultimapNmax 20 "
         "--alignSJoverhangMin 8 "
@@ -92,14 +96,27 @@ rule star_align:
         "--chimMainSegmentMultNmax 1 "
         "--outSAMattributes NH HI AS nM NM ch "
         "--sjdbGTFfile {SJDBGTF} --readFilesIn {input.fastq1} {input.fastq2} "
-        "--readFilesCommand zcat --outSAMtype BAM SortedByCoordinate "
+        "--readFilesCommand zcat --outSAMtype BAM Unsorted "
         "--outSAMattrRGline ID:{params.sample} SM:{params.sample} --outBAMsortingThreadN {threads} "
-        "--bamRemoveDuplicatesType UniqueIdentical; "
-        "mv {output.reference_bam} {output.final_reference_bam}; "
-        "mv {output.transcriptome_bam} {output.final_transcriptome_bam}; "
-        "samtools index {output.final_reference_bam}; "
-        "samtools index {output.final_transcriptome_bam}) "
+        "--bamRemoveDuplicatesType UniqueIdentical) "
         " &> {log}"
+
+rule bam_sort:
+    input:
+        SAMBAMBA = SAMBAMBA, 
+        reference_bam = "temp_bam/{sample}Aligned.out.bam", 
+        transcriptome_bam = "temp_bam/{sample}Aligned.toTranscriptome.out.bam", 
+    output:
+        final_reference_bam = "star_bam/{sample}.reference.bam", 
+        final_transcriptome_bam = "star_bam/{sample}.transcriptome.bam"
+    threads: 8
+    log:
+        "logs/{sample}.bam_sort.log"
+    shell:
+        "({input.SAMBAMBA}  -t {threads} --tmpdir=./temp_bam -o {output.final_reference_bam} {input.reference_bam}; "
+        "{input.SAMBAMBA}  -t {threads} --tmpdir=./temp_bam -o {output.final_transcriptome_bam} {input.transcriptome_bam}) "
+        " &> {log}"
+
 
 
 rule rsem_prepare_reference:
