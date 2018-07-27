@@ -44,7 +44,7 @@ rule star_index:
         starindex = os.path.join(GENOMEDIR, 'SAindex')
     params:
         GENOMEDIR = GENOMEDIR
-    threads: 8
+    threads: 12
     log:
         "logs/star_indexing.log"
     shell:
@@ -63,7 +63,7 @@ rule star_align:
     output: 
         reference_bam = "temp_bam/{sample}Aligned.out.bam", 
         transcriptome_bam = "temp_bam/{sample}Aligned.toTranscriptome.out.bam", 
-    threads: 8
+    threads: 4
     log: 
         "logs/{sample}.star_align.log"
     params:
@@ -104,17 +104,17 @@ rule star_align:
 rule bam_sort:
     input:
         SAMBAMBA = SAMBAMBA, 
-        reference_bam = "temp_bam/{sample}Aligned.out.bam", 
+        reference_bam = temp("temp_bam/{sample}Aligned.out.bam"), 
         transcriptome_bam = "temp_bam/{sample}Aligned.toTranscriptome.out.bam", 
     output:
         final_reference_bam = "star_bam/{sample}.reference.bam", 
         final_transcriptome_bam = "star_bam/{sample}.transcriptome.bam"
-    threads: 8
+    threads: 4
     log:
         "logs/{sample}.bam_sort.log"
     shell:
-        "({input.SAMBAMBA}  -t {threads} --tmpdir=./temp_bam -o {output.final_reference_bam} {input.reference_bam}; "
-        "{input.SAMBAMBA}  -t {threads} --tmpdir=./temp_bam -o {output.final_transcriptome_bam} {input.transcriptome_bam}) "
+        "({input.SAMBAMBA} sort -t {threads} --tmpdir=./temp_bam -o {output.final_reference_bam} {input.reference_bam}; "
+        "mv {input.transcriptome_bam} {output.final_transcriptome_bam})"
         " &> {log}"
 
 
@@ -128,7 +128,7 @@ rule rsem_prepare_reference:
         RSEMDIR = RSEMDIR
     output: 
         RSEMDIR + ".idx.fa"
-    threads: 8
+    threads: 12
     log:
         "logs/rsem_prepare_reference.log"
     shell:
@@ -141,17 +141,18 @@ rule rsem_calculate_expression:
     sample = "{sample}", 
     RSEMDIR = RSEMDIR
   input:
+    RSEM_CALCULATE_EXPRESSION = RSEM_CALCULATE_EXPRESSION, 
     transcriptome_bam = "star_bam/{sample}.transcriptome.bam", 
     rsem_index = RSEMDIR + ".idx.fa"
   output:
     "rsem/{sample}.genes.results"
-  threads: 8
+  threads: 4
 
   log:
     "logs/{sample}.rsem.log"
   shell:
-    "({RSEM_CALCULATE_EXPRESSION} --bam --no-bam-output -p {threads} --paired-end --forward-prob 0 "
-    "{input.transcriptome_bam})" # {params.RSEMDIR} rsem/{params.sample})"
+    "({input.RSEM_CALCULATE_EXPRESSION} --bam --no-bam-output -p {threads} --paired-end --forward-prob 0 "
+    "{input.transcriptome_bam} {params.RSEMDIR} rsem/{params.sample})"
     " >& {log}"
 
 
