@@ -3,10 +3,11 @@
 # STAR parameters from https://github.com/broadinstitute/gtex-pipeline/blob/master/TOPMed_RNAseq_pipeline.md
 # Used RSEM quantification options from Dobin and Gingeras (2015) Mapping RNA-seq Reads with STAR (https://dx.doi.org/10.1002/0471250953.bi1114s51)
 # 2018.07.25 CJY
-
+# 2018.08.31 cjyoon. Summary TPM table 
 
 import os
 import re
+import pandas as pd
 
 # PATH TO STAR FILES 
 STAR = '/home/users/cjyoon/anaconda3/bin/STAR'
@@ -33,8 +34,8 @@ os.makedirs('./star_bam', exist_ok=True)
 
 rule all:
     input:
-        bams = expand("rsem/{sample}.genes.results", sample=SAMPLES)
-
+        bams = expand("rsem/{sample}.genes.results", sample=SAMPLES),
+        tpm_table = 'tpm_table/tpm_table.tsv'
 rule star_index: 
     input:
         STAR = STAR, 
@@ -155,6 +156,33 @@ rule rsem_calculate_expression:
     "{input.transcriptome_bam} {params.RSEMDIR} rsem/{params.sample})"
     " >& {log}"
 
+rule tpm_table:
+    input:
+        expand('rsem/{sample}.genes.results', sample=SAMPLES)
+    output:
+        tpm_table = 'tpm_table/tpm_table.tsv'
+    threads: 1
+    log:
+        "logs/tpm_table.log"
+    run:
+        def merge_tpm(tpm_list):
+            '''merge RSEM results into a single table using pandas'''
+            tpm_series = []
+            for tpm in tpm_list:
+                sampleID = re.sub('.genes.results', '', os.path.basename(tpm))
+                df = pd.read_table(tpm, sep='\t')
+                df.index = df['gene_id']
+                df_tpm = df['TPM']
+                df_tpm = df_tpm.to_frame()
+                df_tpm.columns = [sampleID]
+                tpm_series.append(df_tpm)
 
+            final_table = tpm_series[0]
+            for tpm_vector in  tpm_series[1:]:
+                final_table = final_table.merge(tpm_vector, left_index=True, right_index=True)
+            return final_table
+        
+        tpm_table = merge_tpm(input)
+        tpm_table.to_csv(output.tpm_table, sep='\t', index=True, header=True)
 
 
